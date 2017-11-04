@@ -1,7 +1,8 @@
 module UrlParser exposing
   ( Parser, string, int, s
   , (</>), map, oneOf, top, custom
-  , QueryParser, (<?>), stringParam, intParam, customParam
+  , QueryParser, (<?>), stringParam, stringParamValues, intParam, intParamValues
+  , customParam, customParamValues
   , parsePath, parseHash
   )
 
@@ -39,7 +40,7 @@ type Parser a b =
 type alias State value =
   { visited : List String
   , unvisited : List String
-  , params : Dict String String
+  , params : Dict String (List String)
   , value : value
   }
 
@@ -282,6 +283,17 @@ type QueryParser a b =
 infixl 8 <?>
 
 
+{-| Parse a (possibly repeated) query parameter as a list of `String`s.
+ For example:
+
+    parsePath (s "results" <?> stringParamValues "options") location
+    -- /results                        ==> Just []
+    -- /results?options=hi&options=lo  ==> Just ["hi", "lo"]
+-}
+stringParamValues : String -> QueryParser (List String -> a) a
+stringParamValues name =
+  customParamValues name List.reverse
+
 {-| Parse a query parameter as a `String`.
 
     parsePath (s "blog" <?> stringParam "search") location
@@ -291,6 +303,18 @@ infixl 8 <?>
 stringParam : String -> QueryParser (Maybe String -> a) a
 stringParam name =
   customParam name identity
+
+
+{-| Parse a (possibly repeated) query parameter as a list of `Int`s.
+For example:
+
+    parsePath (s "results" <?> intParamValues "options") location
+    -- /results                        ==> Just []
+    -- /results?options=10&options=11  ==> Just [10, 11]
+-}
+intParamValues : String -> QueryParser (List Int -> a) a
+intParamValues name =
+  customParamValues name (intParamsHelp >> List.reverse)
 
 
 {-| Parse a query parameter as an `Int`. Maybe you want to show paginated
@@ -303,18 +327,23 @@ should appear first.
 -}
 intParam : String -> QueryParser (Maybe Int -> a) a
 intParam name =
-  customParam name intParamHelp
+  customParamValues name (intParamsHelp >> List.head)
 
+intParamsHelp : List String -> List Int
+intParamsHelp =
+  List.filterMap (String.toInt >> Result.toMaybe)
 
-intParamHelp : Maybe String -> Maybe Int
-intParamHelp maybeValue =
-  case maybeValue of
-    Nothing ->
-      Nothing
-
-    Just value ->
-      Result.toMaybe (String.toInt value)
-
+{-| Create a custom query parser that handles query parameters
+with multiple values like:
+    http://example.com?id=1&id=2&id=3
+-}
+customParamValues : String -> (List String -> a) -> QueryParser (a -> b) b
+customParamValues key func =
+  QueryParser <| \{ visited, unvisited, params, value } ->
+    let
+      valueList = Maybe.withDefault [] (Dict.get key params)
+    in
+      [ State visited unvisited params (value (func valueList)) ]
 
 {-| Create a custom query parser. You could create parsers like these:
 
@@ -329,8 +358,13 @@ scenario. We can use that data to decide if they should be added.
 -}
 customParam : String -> (Maybe String -> a) -> QueryParser (a -> b) b
 customParam key func =
-  QueryParser <| \{ visited, unvisited, params, value } ->
-    [ State visited unvisited params (value (func (Dict.get key params))) ]
+  customParamValues key <| \valueList ->
+    case valueList of
+      [] ->
+        func Nothing
+
+      xs ->
+        func (List.head xs)
 
 
 
@@ -357,7 +391,7 @@ parseHash parser location =
 -- PARSER HELPERS
 
 
-parse : Parser (a -> a) a -> String -> Dict String String -> Maybe a
+parse : Parser (a -> a) a -> String -> Dict String (List String) -> Maybe a
 parse (Parser parser) url params =
   parseHelp <| parser <|
     { visited = []
@@ -395,20 +429,21 @@ splitUrl url =
       segments
 
 
-parseParams : String -> Dict String String
+parseParams : String -> Dict String (List String)
 parseParams queryString =
   queryString
     |> String.dropLeft 1
     |> String.split "&"
-    |> List.filterMap toKeyValuePair
-    |> Dict.fromList
+    |> List.foldl addKeyValuePair Dict.empty
 
-
-toKeyValuePair : String -> Maybe (String, String)
-toKeyValuePair segment =
+addKeyValuePair : String -> Dict String (List String) -> Dict String (List String)
+addKeyValuePair segment dict =
   case String.split "=" segment of
     [key, value] ->
-      Maybe.map2 (,) (Http.decodeUri key) (Http.decodeUri value)
+      let
+        update = (Maybe.withDefault []) >> ((::) value) >> Just
+      in
+        Dict.update key update dict
 
     _ ->
-      Nothing
+      dict

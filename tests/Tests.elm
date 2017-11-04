@@ -24,28 +24,32 @@ testParsing =
     , parserTest "Users" "users" (UsersRoutes UsersRoute)
     , parserTest "User" "users/2" (UsersRoutes (UserRoute 2))
     , parserTest "Edit" "users/2/edit" (UsersRoutes (UserEditRoute 2))
+    , parserTestWithQuery "Search" "search" "?page=1&options=a&options=b&ids=10&ids=20&state=NY&state=MA"
+        (SearchRoute (Just 1) (Just "MA") [10, 20] ["a", "b"])
     ]
 
 
-parserTest name path expectedRoute =
+parserTestWithQuery name path query expectedRoute =
     describe name
         [ test (name ++ " in path") <|
             \() ->
                 Expect.equal
                     (Just expectedRoute)
-                    (parsePath routeParser { newLocation | pathname = "/" ++ path })
+                    (parsePath routeParser { newLocation | pathname = "/" ++ path, search = query })
         , test (name ++ " in hash") <|
             \() ->
                 Expect.equal
                     (Just expectedRoute)
-                    (parseHash routeParser { newLocation | hash = "#/" ++ path })
+                    (parseHash routeParser { newLocation | hash = "#/" ++ path, search = query })
         , test (name ++ "in hash without leading slash") <|
             \() ->
                 Expect.equal
                     (Just expectedRoute)
-                    (parseHash routeParser { newLocation | hash = "#" ++ path })
+                    (parseHash routeParser { newLocation | hash = "#" ++ path, search = query })
         ]
 
+parserTest name path expectedRoute =
+  parserTestWithQuery name path "" expectedRoute
 
 
 -- ROUTES
@@ -67,7 +71,7 @@ type MainRoute
     | TokenRoute String
     | UsersRoutes UserRoute
     | NotFoundRoute
-
+    | SearchRoute (Maybe Int) (Maybe String) (List Int) (List String)
 
 
 -- PARSERS
@@ -89,6 +93,12 @@ mainMatchers =
     , map AboutRoute (s "about")
     , map TokenRoute (s "token" </> string)
     , map UsersRoutes (s "users" </> (oneOf usersMatchers))
+    , map SearchRoute
+        (s "search"
+           <?> (intParam "page")
+           <?> (stringParam "state")
+           <?> (intParamValues "ids")
+           <?> (stringParamValues "options"))
     ]
 
 
